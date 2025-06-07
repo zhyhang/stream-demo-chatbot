@@ -1,5 +1,7 @@
 import streamlit as st
 from openai import OpenAI
+import subprocess
+import os
 
 # 登录功能
 def check_login():
@@ -33,6 +35,35 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.messages = []  # 清除聊天记录
     st.rerun()
+
+def execute_command(command):
+    """执行Linux命令并返回结果"""
+    try:
+        # 使用subprocess执行命令
+        result = subprocess.run(
+            command, 
+            shell=True, 
+            capture_output=True, 
+            text=True, 
+            timeout=30  # 30秒超时
+        )
+        
+        # 组合输出和错误信息
+        output = ""
+        if result.stdout:
+            output += f"输出:\n{result.stdout}\n"
+        if result.stderr:
+            output += f"错误:\n{result.stderr}\n"
+        if not output:
+            output = "命令执行完成，无输出内容"
+            
+        output += f"\n返回码: {result.returncode}"
+        return output
+        
+    except subprocess.TimeoutExpired:
+        return "错误: 命令执行超时 (30秒)"
+    except Exception as e:
+        return f"错误: {str(e)}"
 
 # 主应用逻辑
 def main_app():
@@ -95,6 +126,53 @@ def main_app():
             with st.chat_message("assistant"):
                 response = st.write_stream(stream)
             st.session_state.messages.append({"role": "assistant", "content": response})
+
+    # Linux命令执行区域
+    st.markdown("---")
+    st.subheader("🖥️ Linux 命令执行器")
+    st.write("在下方输入Linux命令并执行（请谨慎使用，某些命令可能会影响系统）")
+    
+    # 创建命令输入和执行区域
+    col1, col2 = st.columns([4, 1])
+    
+    with col1:
+        command = st.text_input(
+            "输入Linux命令:", 
+            placeholder="例如: ls -la, pwd, whoami, df -h",
+            key="linux_command"
+        )
+    
+    with col2:
+        st.write("")  # 添加一些空白以对齐按钮
+        execute_btn = st.button("执行", type="primary")
+    
+    # 执行命令
+    if execute_btn and command:
+        with st.spinner("正在执行命令..."):
+            result = execute_command(command)
+        
+        st.subheader("执行结果:")
+        st.code(result, language="bash")
+        
+        # 将命令和结果保存到session state中以便查看历史
+        if "command_history" not in st.session_state:
+            st.session_state.command_history = []
+        
+        st.session_state.command_history.append({
+            "command": command,
+            "result": result
+        })
+    
+    elif execute_btn and not command:
+        st.warning("请输入要执行的命令")
+    
+    # 显示命令历史
+    if "command_history" in st.session_state and st.session_state.command_history:
+        with st.expander("📜 命令历史记录"):
+            for i, item in enumerate(reversed(st.session_state.command_history[-5:])):  # 只显示最近5条
+                st.write(f"**命令 {len(st.session_state.command_history)-i}:** `{item['command']}`")
+                st.code(item['result'], language="bash")
+                st.markdown("---")
 
 # 应用入口点
 if __name__ == "__main__":
