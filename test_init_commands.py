@@ -27,6 +27,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from streamlit_app import (
+    preprocess_init_command,
     run_command_with_timeout,
     should_execute_init,
     execute_init_commands_background
@@ -174,22 +175,16 @@ class TestInitializationCommands:
         Test that initialization commands execute only once per session.
         Requirements: 3.1, 3.2
         """
-        # Mock session state
-        mock_session_state = {}
-        
-        # First call - should execute
-        with patch('streamlit_app.st') as mock_st:
-            mock_st.session_state = mock_session_state
-            
+        marker_file = ".streamlit/.init_executed"
+        # Temporarily clean or mock the marker file
+        with patch('os.path.exists') as mock_exists:
+            mock_exists.return_value = False
             result1 = should_execute_init()
-            assert result1 == True, "First call should return True"
+            assert result1 == True, "First call should return True when marker does not exist"
             
-            # Mark as executed
-            mock_session_state["init_executed"] = True
-            
-            # Second call - should not execute
+            mock_exists.return_value = True
             result2 = should_execute_init()
-            assert result2 == False, "Second call should return False"
+            assert result2 == False, "Second call should return False when marker exists"
     
     def test_background_execution_non_blocking(self):
         """
@@ -248,6 +243,81 @@ class TestInitializationCommands:
         
         finally:
             # Clean up
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+    def test_preprocess_multiline_and_backslash(self):
+        """
+        Test preprocessing of multi-line strings with comments and backslash continuations.
+        """
+        script = """
+        # Comment line 1
+        export TEST_A="hello"
+        
+        # Comment line 2 with empty lines around
+        
+        echo "start" && \\
+        echo "middle" && \\
+        echo "end"
+        
+        # Another independent command
+        echo "final"
+        """
+        processed = preprocess_init_command(script)
+        lines = processed.split("\n")
+        assert len(lines) == 3
+        assert lines[0] == 'export TEST_A="hello"'
+        assert lines[1] == 'echo "start" && echo "middle" && echo "end"'
+        assert lines[2] == 'echo "final"'
+
+    def test_preprocess_list_format(self):
+        """
+        Test preprocessing of command list/array format.
+        """
+        cmd_list = [
+            "# Comment in array",
+            "mkdir -p /tmp/test_dir",
+            "echo 'Line 1' && \\",
+            "echo 'Line 2'",
+            "echo 'Line 3'"
+        ]
+        processed = preprocess_init_command(cmd_list)
+        lines = processed.split("\n")
+        assert len(lines) == 3
+        assert lines[0] == 'mkdir -p /tmp/test_dir'
+        assert lines[1] == "echo 'Line 1' && echo 'Line 2'"
+        assert lines[2] == "echo 'Line 3'"
+
+    def test_multiline_execution_sequential_and_dependencies(self):
+        """
+        Test executing a multi-line script with comments, backslashes, and sequential control.
+        """
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            temp_file = f.name
+        
+        try:
+            multiline_cmd = f"""
+            # Step 1: Write first line
+            echo '1' > {temp_file}
+
+            # Step 2: Line continuation with &&
+            echo '2' >> {temp_file} && \\
+            echo '3' >> {temp_file}
+
+            # Step 3: Independent step that runs even if a previous failed check succeeded
+            echo '4' >> {temp_file}
+            """
+            
+            return_code, stdout, stderr = run_command_with_timeout(multiline_cmd, timeout=10)
+            assert return_code == 0
+            
+            with open(temp_file, 'r') as f:
+                content = f.read()
+            assert "1" in content
+            assert "2" in content
+            assert "3" in content
+            assert "4" in content
+        finally:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
     
